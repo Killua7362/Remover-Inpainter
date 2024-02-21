@@ -1,14 +1,10 @@
 import numpy as np
-from detectron2.config import get_cfg
-from detectron2.engine import DefaultPredictor
 import cv2
-import os
 from transformers import SamConfig,SamProcessor,SamModel
 import torch
-import random
 from PIL import Image
-from utils.sam_utils import get_bounding_box
 from diffusers import  ControlNetModel, UniPCMultistepScheduler
+from ultralytics import YOLO
 
 import sys 
 sys.path.append('./downloaded_models/ControlNetInpaint')
@@ -16,26 +12,8 @@ from src.pipeline_stable_diffusion_controlnet_inpaint import *
 
 
 def main():
-    cfg = get_cfg()
-    cfg.OUTPUT_DIR = "saved_models/detectron2"
-    cfg.set_new_allowed(True)
-    cfg.merge_from_file(os.path.join(cfg.OUTPUT_DIR,"config.yaml"))
-    cfg.DATASETS.TRAIN = ("train_dataset",)
-    cfg.DATASETS.TEST = ()
-    cfg.DATALOADER.NUM_WORKERS = 2
-    cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR,"model_final.pth")
-    cfg.SOLVER.IMS_PER_BATCH = 8
-    cfg.SOLVER.BASE_LR = 0.0001
-    cfg.SOLVER.MAX_ITER = 1000  
-    cfg.SOLVER.STEPS = []        
-    cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512  
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1  
-
-    predictor = DefaultPredictor(cfg)
-
     image_path = ""
     input_image = Image.open(image_path)
-
 
     processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
 
@@ -45,17 +23,11 @@ def main():
     model.to("cuda")
 
     image = np.array(input_image)
-    outputs = predictor(image)
-    filter = [i for i,score in enumerate(outputs['instances'].scores) if score > 0.05]
-    outputs['instances'] = outputs['instances'][filter]
-    ground_truth_mask = np.zeros_like(outputs['instances'].pred_masks[0].cpu().numpy()).astype('uint8')
-
-    for pred_mask in outputs['instances'].pred_masks:
-        mask = pred_mask.cpu().numpy().astype('uint8') * 255
-        ground_truth_mask += mask
-
-
-    prompt = get_bounding_box(ground_truth_mask)
+    model = YOLO('./results/50_epochs-/weights/last.pt')
+    res = model.predict(image_path,conf=0.5)
+    bounding_box = res[0]
+    prompt = [bounding_box[i] for i in range(4)]
+    
     inputs = processor(input_image,input_boxes=[[prompt]],return_tensors='pt')
     inputs = {k:v.to('cuda') for k,v in inputs.items()}
     model.eval()
@@ -67,10 +39,8 @@ def main():
     out = np.where(out > 0.999,1,0)
     out = np.stack((out,)*3, axis=-1)
 
-
     mask_image = cv2.normalize(out,None,alpha=0,beta=255,norm_type=cv2.NORM_MINMAX,dtype=cv2.CV_8U)
     input_image = input_image.resize((256,256),Image.NEAREST) # this is not a array
-
 
     controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
 
